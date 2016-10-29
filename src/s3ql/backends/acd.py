@@ -97,6 +97,8 @@ try: #Ignore ImportError if acd_cli is not installed
 
         @copy_ancestor_docstring
         def is_temp_failure(self, exc):
+            log.warning("Got exception %s: %s" % (type(exc).__name__, str(exc)))
+            
             if isinstance(exc, (MD5Error, SizeError)):
                 return True
             elif is_temp_network_error(exc):
@@ -104,7 +106,7 @@ try: #Ignore ImportError if acd_cli is not installed
             elif (isinstance(exc, RequestError) and
                 ((500 <= exc.status_code <= 599
                     and exc.status_code not in (501,505,508,510,511,523))
-                or exc.status_code in (408, 429))):
+                or exc.status_code in (400, 401, 408, 429, RequestError.CODE.CONN_EXCEPTION, RequestError.CODE.FAILED_SUBREQUEST, RequestError.CODE.INCOMPLETE_RESULT, RequestError.CODE.REFRESH_FAILED))):
                 return True
             elif (isinstance(exc, RequestError) and exc.status_code == 409):
                 raise RuntimeError('File name collision for file not in cache, please run acd_cli sync')
