@@ -5,6 +5,7 @@ try: #Ignore ImportError if acd_cli is not installed
     import tempfile
     import hashlib
     import time
+    import json
 
     from dugong import is_temp_network_error
     from .. import BUFSIZE
@@ -108,8 +109,6 @@ try: #Ignore ImportError if acd_cli is not installed
                     and exc.status_code not in (501,505,508,510,511,523))
                 or exc.status_code in (400, 401, 408, 429, RequestError.CODE.CONN_EXCEPTION, RequestError.CODE.FAILED_SUBREQUEST, RequestError.CODE.INCOMPLETE_RESULT, RequestError.CODE.REFRESH_FAILED))):
                 return True
-            elif (isinstance(exc, RequestError) and exc.status_code == 409):
-                raise RuntimeError('File name collision for file not in cache, please run acd_cli sync')
             
             return False
 
@@ -324,7 +323,15 @@ try: #Ignore ImportError if acd_cli is not installed
             if node:
                 node = Backend._acd_client.overwrite_stream(self.fh, node.id)
             else:
-                node = Backend._acd_client.upload_stream(self.fh, self.key, self.parent_id)
+                #Deal with error 409 (file already exists, but is evidently not in our cache) by overwriting
+                try:
+                    node = Backend._acd_client.upload_stream(self.fh, self.key, self.parent_id)
+                except RequestError as e:
+                    if (e.status_code == 409):
+                        self.fh.seek(0)
+                        node = Backend._acd_client.overwrite_stream(self.fh, json.loads(e.msg)['info']['nodeId'])
+                    else:
+                        raise
             
             Backend._acd_cache.insert_node(node)
             node = Backend._acd_cache.get_node(node['id'])
