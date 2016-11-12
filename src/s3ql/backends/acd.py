@@ -69,10 +69,10 @@ try: #Ignore ImportError if acd_cli is not installed
                     Backend._acd_cache = db.NodeCache(CACHE_PATH, SETTINGS_PATH)
             
                     Backend.acd_client_owner = Backend._acd_cache.KeyValueStorage.get(CacheConsts.OWNER_ID)
+            
+                self.parent_node_id = Backend._acd_cache.get_root_node().id
                     
             self.path = storage_url[6:].strip("/")
-            
-            self.parent_node_id = Backend._acd_cache.get_root_node().id
             
             self._create_rootdir()
            
@@ -80,14 +80,16 @@ try: #Ignore ImportError if acd_cli is not installed
         def _create_rootdir(self):
             if self.path:
                 for dir in self.path.split('/'):
-                    n = Backend._acd_cache.get_child(self.parent_node_id, dir)
+                    with Backend._static_lock:
+                        n = Backend._acd_cache.get_child(self.parent_node_id, dir)
                     if n:
                         if not n.is_folder:
                             raise QuietError('Invalid storage URL', exitcode=2)
                         self.parent_node_id = n.id
                     else:
                         n = Backend._acd_client.create_folder(dir, self.parent_node_id)
-                        Backend._acd_cache.insert_node(n)
+                        with Backend._static_lock:
+                            Backend._acd_cache.insert_node(n)
                         self.parent_node_id = n['id']
         
         # public methods
@@ -116,17 +118,20 @@ try: #Ignore ImportError if acd_cli is not installed
         def clear(self):
             if self.path:
                 node = Backend._acd_client.move_to_trash(self.parent_node_id)
-                Backend._acd_cache.insert_node(node)
-                self.parent_node_id = Backend._acd_cache.get_root_node().id
+                with Backend._static_lock:
+                    Backend._acd_cache.insert_node(node)
+                    self.parent_node_id = Backend._acd_cache.get_root_node().id
                 self._create_rootdir()
             else:
                 raise RuntimeError("Cannot clear s3ql files only if files are in root of the drive")
         
         def get_node_with_metadata(self, key):
-            node = Backend._acd_cache.get_child(self.parent_node_id, key)
+            with Backend._static_lock:
+                node = Backend._acd_cache.get_child(self.parent_node_id, key)
             if not node:
                 raise NoSuchObject(key)
-            md = Backend._acd_cache.get_property(node.id, self.acd_client_owner, S3QL_PROPERTY_METADATA)
+            with Backend._static_lock:
+                md = Backend._acd_cache.get_property(node.id, self.acd_client_owner, S3QL_PROPERTY_METADATA)
             return node, md and thaw_basic_mapping(md.encode('utf-8'))
         
         @retry
@@ -137,7 +142,8 @@ try: #Ignore ImportError if acd_cli is not installed
         @retry
         @copy_ancestor_docstring
         def get_size(self, key):
-            node = Backend._acd_cache.get_child(self.parent_node_id, key)
+            with Backend._static_lock:
+                node = Backend._acd_cache.get_child(self.parent_node_id, key)
             if not node:
                 raise NoSuchObject(key)
             return node.size
@@ -157,10 +163,12 @@ try: #Ignore ImportError if acd_cli is not installed
         @retry
         @copy_ancestor_docstring
         def delete(self, key, force=False, is_retry=False):
-            node = Backend._acd_cache.get_child(self.parent_node_id, key)
+            with Backend._static_lock:
+                node = Backend._acd_cache.get_child(self.parent_node_id, key)
             if node:
                 node = Backend._acd_client.move_to_trash(node.id)
-                Backend._acd_cache.insert_node(node)
+                with Backend._static_lock:
+                    Backend._acd_cache.insert_node(node)
             else:
                 if force or is_retry:
                     pass
@@ -170,9 +178,10 @@ try: #Ignore ImportError if acd_cli is not installed
         @retry_generator
         @copy_ancestor_docstring
         def list(self, prefix=''):
-            for n in Backend._acd_cache.childrens_names(self.parent_node_id):
-                if n.startswith(prefix):
-                    yield n
+            with Backend._static_lock:
+                for n in Backend._acd_cache.childrens_names(self.parent_node_id):
+                    if n.startswith(prefix):
+                        yield n
 
         @retry
         @copy_ancestor_docstring
@@ -192,17 +201,20 @@ try: #Ignore ImportError if acd_cli is not installed
         @copy_ancestor_docstring
         def update_meta(self, key, metadata):
             if metadata is not None:
-                node = Backend._acd_cache.get_child(self.parent_node_id, key)
+                with Backend._static_lock:
+                    node = Backend._acd_cache.get_child(self.parent_node_id, key)
                 if not node:
                     raise NoSuchObject(key)
                 m = freeze_basic_mapping(metadata).decode('utf-8')
                 Backend._acd_client.add_property(node.id, self.acd_client_owner, S3QL_PROPERTY_METADATA, m)
-                Backend._acd_cache.insert_property(node.id, self.acd_client_owner, S3QL_PROPERTY_METADATA, m)
+                with Backend._static_lock:
+                    Backend._acd_cache.insert_property(node.id, self.acd_client_owner, S3QL_PROPERTY_METADATA, m)
 
         @retry
         @copy_ancestor_docstring
         def rename(self, src, dest, metadata=None):
-            node = Backend._acd_cache.get_child(self.parent_node_id, src)
+            with Backend._static_lock:
+                node = Backend._acd_cache.get_child(self.parent_node_id, src)
             if not node:
                 raise NoSuchObject(src)
             
@@ -217,7 +229,8 @@ try: #Ignore ImportError if acd_cli is not installed
             node = Backend._acd_client.update_metadata(node.id, m)
             if not node:
                 raise NoSuchObject(key)
-            Backend._acd_cache.insert_node(node)
+            with Backend._static_lock:
+                Backend._acd_cache.insert_node(node)
             if node['name'] != dest or (metadata and m['properties'][self.acd_client_owner][S3QL_PROPERTY_METADATA] != node['properties'][self.acd_client_owner][S3QL_PROPERTY_METADATA]):
                 raise RuntimeError('Rename failed for %s (received: %s, sent: %s)' %
                                         (self.key, repr(node), repr(m)))
@@ -319,7 +332,8 @@ try: #Ignore ImportError if acd_cli is not installed
 
             self.fh.seek(0)
             
-            node = Backend._acd_cache.get_child(self.parent_id, self.key)
+            with Backend._static_lock:
+                node = Backend._acd_cache.get_child(self.parent_id, self.key)
             if node:
                 node = Backend._acd_client.overwrite_stream(self.fh, node.id)
             else:
@@ -333,8 +347,9 @@ try: #Ignore ImportError if acd_cli is not installed
                     else:
                         raise
             
-            Backend._acd_cache.insert_node(node)
-            node = Backend._acd_cache.get_node(node['id'])
+            with Backend._static_lock:
+                Backend._acd_cache.insert_node(node)
+                node = Backend._acd_cache.get_node(node['id'])
 
             if node.size != self.obj_size:
                 # delete may fail, but we don't want to loose the exception
